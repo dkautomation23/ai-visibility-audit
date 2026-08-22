@@ -2,6 +2,7 @@
 
     python audit.py example.com
     python audit.py example.com --pages /pricing,/about --json report.json
+    python audit.py --batch sites.txt --csv summary.csv
     python audit.py --selftest
 
 Not an SEO score. This looks at the specific things that decide whether
@@ -456,29 +457,72 @@ def selftest() -> int:
     return 1 if failures else 0
 
 
+def write_summary_csv(reports: list[dict], path: str) -> None:
+    """One row per site - the view you want when auditing a client list."""
+    import csv as csv_module
+
+    with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv_module.writer(handle)
+        writer.writerow(["site", "score", "blockers", "warnings", "crawlers_blocked",
+                         "llms_txt", "top_issue"])
+        for report in reports:
+            findings = report["findings"]
+            blockers = [f for f in findings if f["level"] == "blocker"]
+            crawlers = report["robots"].get("crawlers", {})
+            writer.writerow([
+                report["site"],
+                report["score"],
+                len(blockers),
+                len([f for f in findings if f["level"] == "warning"]),
+                len([a for a, state in crawlers.items() if state == "blocked"]),
+                "yes" if report["llms_txt"] else "no",
+                blockers[0]["title"] if blockers else "",
+            ])
+    print(f"{len(reports)} site(s) -> {path}")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Audit what AI assistants can read on a site.")
     parser.add_argument("site", nargs="?", help="domain or URL, e.g. example.com")
     parser.add_argument("--pages", default="", help="extra paths to check, comma separated: /pricing,/about")
+    parser.add_argument("--batch", metavar="FILE", help="file with one domain per line")
     parser.add_argument("--json", metavar="FILE", help="write the full report as JSON")
+    parser.add_argument("--csv", metavar="FILE", help="one summary row per site (use with --batch)")
     parser.add_argument("--selftest", action="store_true", help="run offline checks and exit")
     args = parser.parse_args(argv)
 
     if args.selftest:
         return selftest()
-    if not args.site:
-        parser.error("give me a domain, or use --selftest")
 
-    report = audit(args.site, args.pages.split(",") if args.pages else [])
-    print_report(report)
+    targets = []
+    if args.batch:
+        with open(args.batch, encoding="utf-8") as handle:
+            targets = [line.strip() for line in handle
+                       if line.strip() and not line.startswith("#")]
+    elif args.site:
+        targets = [args.site]
+    else:
+        parser.error("give me a domain, --batch a file, or --selftest")
+
+    extra = args.pages.split(",") if args.pages else []
+    reports = []
+    for target in targets:
+        report = audit(target, extra)
+        reports.append(report)
+        print_report(report)
 
     if args.json:
         with open(args.json, "w", encoding="utf-8") as handle:
-            json.dump(report, handle, indent=2)
+            json.dump(reports if len(reports) > 1 else reports[0], handle, indent=2)
         print(f"full report -> {args.json}")
+    if args.csv:
+        write_summary_csv(reports, args.csv)
+    if len(reports) > 1:
+        worst = min(reports, key=lambda report: report["score"])
+        print(f"{len(reports)} site(s) checked, lowest score: {worst['site']} at {worst['score']}/100")
 
     # Exit 1 when something is actually blocking visibility - handy in CI.
-    return 1 if any(f["level"] == "blocker" for f in report["findings"]) else 0
+    return 1 if any(f["level"] == "blocker" for report in reports for f in report["findings"]) else 0
 
 
 if __name__ == "__main__":

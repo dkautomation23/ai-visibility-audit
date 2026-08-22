@@ -80,6 +80,22 @@ The second one is a deliberate business decision, and the tool says so rather
 than calling it a mistake. Most sites that look like this did not decide
 anything — that is the difference worth finding.
 
+## Checking a list of sites
+
+```bash
+python audit.py --batch samples/sites.example.txt --csv summary.csv
+```
+
+```csv
+site,score,blockers,warnings,crawlers_blocked,llms_txt,top_issue
+https://stripe.com,58,0,6,0,yes,
+https://basecamp.com,65,0,5,0,no,
+https://nytimes.com,50,1,4,10,no,10 AI crawler(s) blocked outright
+```
+
+Your site next to three competitors on one screen is a more useful argument
+than any single score.
+
 ## Install
 
 ```bash

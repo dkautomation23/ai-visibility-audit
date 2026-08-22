@@ -1,0 +1,5 @@
+# One site per line, # for comments.
+# Useful for auditing a client list, or your own site against three competitors.
+stripe.com
+basecamp.com
+nytimes.com
