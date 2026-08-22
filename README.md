@@ -117,8 +117,9 @@ you *are*:
 - **No citation tracking.** Whether ChatGPT or Perplexity actually mentions your
   brand for a given prompt needs repeated querying of each assistant over time —
   a different job, with API costs and sampling problems.
-- **No competitor comparison.** It scores one site against good practice, not
-  against the three companies beating you in answers.
+- **Comparison is structural, not competitive.** `--batch` puts you and your
+  competitors side by side on readability, but it cannot tell you which of you
+  the assistants actually recommend.
 - **No content work.** It will tell you the FAQ is missing; writing questions in
   your customers' words is not something a script should guess.
 - **One page at a time.** It reads the URLs you pass, not the whole site.
