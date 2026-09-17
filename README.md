@@ -1,5 +1,7 @@
 # ai-visibility-audit
 
+[![CI](https://github.com/dkautomation23/ai-visibility-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/dkautomation23/ai-visibility-audit/actions/workflows/ci.yml)
+
 Checks what an AI assistant can actually read on a website — crawler access,
 JavaScript dependence, structured data, freshness, answerable copy — and prints
 the specific things standing between you and being quoted.
