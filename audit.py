@@ -163,13 +163,90 @@ def check_robots(base: str, findings: list[Finding]) -> dict:
     return {"present": True, "crawlers": statuses}
 
 
-def check_llms_txt(base: str, findings: list[Finding]) -> bool:
+# Two forms appear in real files. The specification shows
+# `- [name](url): notes`, and plenty of sites - cursor.com among them - list
+# bare URLs instead, sometimes indented into a hierarchy. Reading only the
+# documented form reports a 400-link file as empty, which is a false blocker in
+# a tool whose whole job is to be trusted about blockers.
+LLMS_LINK = re.compile(r"^\s*-\s*\[([^\]]*)\]\(([^)]+)\)\s*(?::\s*(.*))?$")
+LLMS_BARE_LINK = re.compile(r"^\s*-\s*(https?://\S+)\s*(?::\s*(.*))?$")
+# How many of the listed links to actually request. A documentation index
+# can list hundreds; asking for all of them is indistinguishable from a
+# crawl and gets the checker throttled.
+LLMS_LINK_SAMPLE = 25
+LLMS_SECTION = re.compile(r"^##\s+(.+)$")
+
+
+@dataclass
+class LlmsTxt:
+    """What a published llms.txt actually contains."""
+
+    present: bool = False
+    title: str = ""
+    summary: str = ""
+    sections: list[str] = field(default_factory=list)
+    links: list[tuple[str, str]] = field(default_factory=list)   # (text, url)
+    bytes: int = 0
+    lines: int = 0
+
+
+def parse_llms_txt(text: str) -> LlmsTxt:
+    """Read the structure the llmstxt.org specification describes.
+
+    An H1 with the name of the project, an optional blockquote summary, then
+    sections of markdown link lists. Anything else in the file is prose a model
+    may read but nothing here can check.
+    """
+    parsed = LlmsTxt(present=True, bytes=len(text.encode("utf-8")), lines=len(text.splitlines()))
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if not parsed.title and line.startswith("# "):
+            parsed.title = line[2:].strip()
+            continue
+        if not parsed.summary and line.startswith("> "):
+            parsed.summary = line[2:].strip()
+            continue
+        section = LLMS_SECTION.match(line)
+        if section:
+            parsed.sections.append(section.group(1).strip())
+            continue
+        link = LLMS_LINK.match(line)
+        if link:
+            parsed.links.append((link.group(1).strip(), link.group(2).strip()))
+            continue
+        bare = LLMS_BARE_LINK.match(line)
+        if bare:
+            # No title of its own; the URL is the label.
+            parsed.links.append(("", bare.group(1).strip()))
+    return parsed
+
+
+def same_site(url: str, base: str) -> bool:
+    """Is this URL part of the same site, allowing for subdomains?
+
+    Exact host comparison calls docs.example.com linking to example.com an
+    external link, which is one organisation linking to itself. This compares
+    the last two labels instead - crude for a .co.uk, and right for the case
+    that actually comes up.
+    """
+    here = urlparse(base).netloc.lower().split(":")[0]
+    there = urlparse(url).netloc.lower().split(":")[0]
+    if not there:
+        return True                       # relative link: same site by definition
+    return here.split(".")[-2:] == there.split(".")[-2:]
+
+
+def check_llms_txt(base: str, findings: list[Finding], check_links: bool = True,
+                   link_sample: int = LLMS_LINK_SAMPLE) -> dict:
+    """Is there an llms.txt, and is it worth reading?
+
+    Presence is the easy half and the half everyone checks. The half that
+    decides whether the file does anything is the content: a file with no links
+    is an index of nothing, and a link that 404s sends an assistant to a dead
+    page while sounding authoritative.
+    """
     response = fetch(urljoin(base, "/llms.txt"))
-    present = bool(response is not None and response.status_code == 200 and "#" in response.text[:400])
-    if present:
-        findings.append(Finding("content map", "ok", "llms.txt present",
-                                f"{len(response.text.splitlines())} lines", ""))
-    else:
+    if response is None or response.status_code != 200 or "#" not in response.text[:400]:
         # Deliberately a low-priority note: Google stated in May 2026 that it
         # does not use llms.txt. Anthropic and Perplexity docs do reference it.
         findings.append(Finding(
@@ -177,7 +254,99 @@ def check_llms_txt(base: str, findings: list[Finding]) -> bool:
             "Optional and contested - Google says it does not use it; some assistants do.",
             "Cheap to add (a markdown index of your key pages), but do it after the items above.",
         ))
-    return present
+        return {"present": False}
+
+    parsed = parse_llms_txt(response.text)
+    detail = f"{parsed.lines} lines, {len(parsed.links)} link(s), {len(parsed.sections)} section(s)"
+    findings.append(Finding("content map", "ok", "llms.txt present", detail, ""))
+
+    if not parsed.title:
+        findings.append(Finding(
+            "content map", "warning", "llms.txt has no H1 title",
+            "The specification opens with `# Name`; without it an assistant has no label for the file.",
+            "Add a first line of `# Your product or site name`.",
+        ))
+    if not parsed.summary:
+        findings.append(Finding(
+            "content map", "warning", "llms.txt has no summary line",
+            "The optional `> one sentence` blockquote is what gets quoted when the file is cited.",
+            "Add `> what this is, in one sentence` under the title.",
+        ))
+    if not parsed.links:
+        findings.append(Finding(
+            "content map", "blocker", "llms.txt lists no links",
+            "A content map with nothing on it is a file an assistant reads and learns nothing from.",
+            "List your key pages as `- [Title](https://...): what it covers`.",
+        ))
+        return {"present": True, "links": 0, "broken": []}
+
+    external = [url for _, url in parsed.links
+                if url.startswith("http") and not same_site(url, base)]
+    if external:
+        hosts = sorted({urlparse(url).netloc for url in external})[:3]
+        findings.append(Finding(
+            "content map", "info",
+            f"{len(external)} of {len(parsed.links)} link(s) point at another domain",
+            "Mostly " + ", ".join(hosts) + ". Deliberate when it is your other property, "
+            "a problem when it is not: an assistant follows the map to whoever owns those pages.",
+            "Check that every domain in the map is one you control.",
+        ))
+
+    broken: list[str] = []
+    if check_links:
+        seen: set[str] = set()
+        refused = 0
+        for _, url in parsed.links:
+            if len(seen) >= link_sample:
+                break
+            # The fragment addresses a place on a page, not a different page.
+            absolute = urljoin(base, url).split("#", 1)[0]
+            if absolute in seen:
+                continue
+            seen.add(absolute)
+            answer = fetch(absolute)
+            if answer is None:
+                refused += 1
+            elif answer.status_code >= 400:
+                broken.append(f"{absolute} ({answer.status_code})")
+            time.sleep(0.3)
+
+        checked = len(seen)
+        sampled = " (first %d of %d)" % (checked, len(parsed.links)) if len(parsed.links) > checked else ""
+
+        if refused > checked / 2:
+            # Being turned away by half the site says something about us, not
+            # about the site. linkscan makes the same distinction for the same
+            # reason: a checker that cries wolf is not read a second time.
+            findings.append(Finding(
+                "content map", "warning",
+                "Could not verify the links in llms.txt",
+                f"{refused} of {checked} requests got no answer{sampled} - most likely rate limiting, not dead pages.",
+                "Re-run with a smaller --llms-links, or check from an address the site does not throttle.",
+            ))
+        elif broken:
+            findings.append(Finding(
+                "content map", "blocker", f"{len(broken)} link(s) in llms.txt are dead",
+                "; ".join(broken[:5]) + (" ..." if len(broken) > 5 else "") + sampled,
+                "A dead link in the file assistants trust is worse than no file.",
+            ))
+        else:
+            findings.append(Finding(
+                "content map", "ok", f"All {checked} link(s) checked in llms.txt resolve{sampled}", "", ""))
+
+    full = fetch(urljoin(base, "/llms-full.txt"))
+    if full is not None and full.status_code == 200:
+        findings.append(Finding(
+            "content map", "ok", "llms-full.txt present",
+            f"{len(full.text.encode('utf-8')) // 1024} KB of expanded content", ""))
+
+    return {
+        "present": True,
+        "title": parsed.title,
+        "links": len(parsed.links),
+        "sections": parsed.sections,
+        "broken": broken,
+    }
 
 
 # ------------------------------------------------------------------ page
@@ -334,13 +503,14 @@ def score(findings: list[Finding]) -> int:
     return max(0, 100 - penalty)
 
 
-def audit(target: str, extra_paths: list[str] | None = None) -> dict:
+def audit(target: str, extra_paths: list[str] | None = None,
+          link_sample: int = LLMS_LINK_SAMPLE) -> dict:
     base = normalise(target)
     started = time.perf_counter()
     findings: list[Finding] = []
 
     robots = check_robots(base, findings)
-    llms = check_llms_txt(base, findings)
+    llms = check_llms_txt(base, findings, link_sample=link_sample)
 
     paths = ["/"] + [path.strip() for path in (extra_paths or []) if path.strip()]
     pages = [read_page(urljoin(base, path)) for path in paths]
@@ -451,6 +621,56 @@ def selftest() -> int:
     check("a healthy page produces no blockers", not any(f.level == "blocker" for f in findings))
     check("question headings are credited", any("question-shaped" in f.title for f in findings))
 
+    # --- llms.txt: the structure, not just the presence ---------------------
+    good = parse_llms_txt(
+        "# Acme Robotics\n"
+        "\n"
+        "> Calibration services and spare parts for CNC lines.\n"
+        "\n"
+        "## Docs\n"
+        "\n"
+        "- [Calibration guide](https://acme.example/docs/calibration): step by step\n"
+        "- [Spare parts](https://acme.example/parts)\n"
+        "\n"
+        "## Company\n"
+        "\n"
+        "- [About](https://acme.example/about): who we are\n"
+    )
+    check("llms.txt title is read", good.title == "Acme Robotics")
+    check("llms.txt summary is read", good.summary.startswith("Calibration services"))
+    check("llms.txt sections are read", good.sections == ["Docs", "Company"])
+    check("llms.txt links are read", len(good.links) == 3)
+    check("a link without notes still counts",
+          ("Spare parts", "https://acme.example/parts") in good.links)
+
+    check("a subdomain is the same site", same_site("https://anthropic.com/x", "https://docs.anthropic.com"))
+    check("another organisation is not", not same_site("https://github.com/x", "https://docs.anthropic.com"))
+    check("a relative link is the same site", same_site("/docs", "https://acme.example"))
+
+    # cursor.com lists bare URLs, indented, with no markdown link syntax at all.
+    plain = parse_llms_txt(
+        "# Cursor Documentation\n"
+        "\n"
+        "## Get Started\n"
+        "\n"
+        "- https://cursor.com/docs.md\n"
+        "  - https://cursor.com/docs/models/claude-opus-5.md\n"
+    )
+    check("bare URLs count as links", len(plain.links) == 2)
+    check("an indented bare URL is still a link",
+          plain.links[1][1].endswith("claude-opus-5.md"))
+    check("a bare URL has no title of its own", plain.links[0][0] == "")
+
+    bare = parse_llms_txt("# Only a title\n\nSome prose and no links at all.\n")
+    check("a file with no links is seen as having none", bare.links == [])
+    check("prose is not mistaken for a link", bare.sections == [])
+
+    untitled = parse_llms_txt("> summary first\n\n- [A](https://x.example/a)\n")
+    check("a missing H1 is detectable", untitled.title == "")
+    check("the summary is still read without a title", untitled.summary == "summary first")
+
+    check("byte count is of the encoded file", parse_llms_txt("# \u00c4\n").bytes == 5)
+
     print(f"selftest: {checks - len(failures)}/{checks} passed")
     for failure in failures:
         print("  FAILED:", failure)
@@ -475,7 +695,7 @@ def write_summary_csv(reports: list[dict], path: str) -> None:
                 len(blockers),
                 len([f for f in findings if f["level"] == "warning"]),
                 len([a for a, state in crawlers.items() if state == "blocked"]),
-                "yes" if report["llms_txt"] else "no",
+                "yes" if report["llms_txt"].get("present") else "no",
                 blockers[0]["title"] if blockers else "",
             ])
     print(f"{len(reports)} site(s) -> {path}")
@@ -488,6 +708,8 @@ def main(argv=None) -> int:
     parser.add_argument("--batch", metavar="FILE", help="file with one domain per line")
     parser.add_argument("--json", metavar="FILE", help="write the full report as JSON")
     parser.add_argument("--csv", metavar="FILE", help="one summary row per site (use with --batch)")
+    parser.add_argument("--llms-links", type=int, default=LLMS_LINK_SAMPLE,
+                        help=f"how many llms.txt links to check (default {LLMS_LINK_SAMPLE}; your own site can take more)")
     parser.add_argument("--selftest", action="store_true", help="run offline checks and exit")
     args = parser.parse_args(argv)
 
@@ -507,7 +729,7 @@ def main(argv=None) -> int:
     extra = args.pages.split(",") if args.pages else []
     reports = []
     for target in targets:
-        report = audit(target, extra)
+        report = audit(target, extra, link_sample=args.llms_links)
         reports.append(report)
         print_report(report)
 

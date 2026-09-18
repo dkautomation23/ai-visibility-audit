@@ -116,6 +116,15 @@ CI or a nightly check.
 This measures whether you *can* be read and quoted. It does not measure whether
 you *are*:
 
+- **The llms.txt check now reads the file, not just its existence.** It parses
+  the title, summary, sections and links (both `- [name](url)` and the bare-URL
+  form real sites use), reports a map with no links as a blocker, samples the
+  links to see that they resolve, and says which other domains the map points
+  at. `--llms-links N` raises the sample; the default of 25 exists because
+  asking a documentation index for all 500 of its links is indistinguishable
+  from a crawl and gets the checker throttled — at which point it would report
+  its own rate-limiting as dead links, which it now refuses to do.
+
 - **No citation tracking.** Whether ChatGPT or Perplexity actually mentions your
   brand for a given prompt needs repeated querying of each assistant over time —
   a different job, with API costs and sampling problems.
