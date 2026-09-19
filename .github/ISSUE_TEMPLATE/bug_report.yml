@@ -1,0 +1,77 @@
+name: Bug report
+description: audit.py crashed, mis-scored a site, or produced a wrong finding.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If the site you audited is private, don't paste its URL — describe
+        the page shape instead (word count, whether it's JS-rendered, what
+        structured data it has) or reproduce against a public site.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit or date you pulled
+      description: >-
+        This project doesn't tag releases yet. Run `git rev-parse --short HEAD`
+        in your checkout, or say roughly when you cloned/pulled it.
+      placeholder: a1b2c3d
+    validations:
+      required: true
+  - type: dropdown
+    id: pyversion
+    attributes:
+      label: Python version
+      options:
+        - "3.10"
+        - "3.11"
+        - "3.12"
+        - "3.13+"
+        - Other (say which, below)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - Other (say which, below)
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Exact command you ran
+      placeholder: python audit.py example.com --pages /pricing,/about
+    validations:
+      required: true
+  - type: input
+    id: site
+    attributes:
+      label: Site audited (only if public)
+      placeholder: https://example.com
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead
+      description: Paste the terminal output if you can.
+      render: console
+    validations:
+      required: true
+  - type: textarea
+    id: selftest
+    attributes:
+      label: Output of `python audit.py --selftest`
+      description: Confirms the install itself is sane before digging into the site-specific bug.
+      render: console
+    validations:
+      required: true
