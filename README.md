@@ -104,7 +104,7 @@ than any single score.
 git clone https://github.com/dkautomation23/ai-visibility-audit.git
 cd ai-visibility-audit
 pip install -r requirements.txt
-python audit.py --selftest     # 15 checks, offline
+python audit.py --selftest     # 31 checks, offline
 ```
 
 Python 3.10+, two dependencies (requests, beautifulsoup4). `--json report.json`
